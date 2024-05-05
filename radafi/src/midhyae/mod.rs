@@ -8,7 +8,6 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, Instant};
-use tokio::time::sleep;
 
 /**
  * Defines the categories of errors that may occur when recording radio streams
@@ -28,8 +27,8 @@ pub enum RecordingError {
 
 /**
  * ----------------------------------------------------------------------------
- * The following are structures for parsing the JSON results returned by the
- * Radio Garden API.
+ * The following are structures for storing results returned by the Radio
+ * Garden API.
  */
 #[derive(Deserialize)]
 struct Place {
@@ -71,6 +70,13 @@ struct Item {
 #[derive(Serialize, Deserialize, Debug)]
 struct Page {
     url: String,
+    title: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct Stream {
+    name: String,
+    url: String,
 }
 
 /**
@@ -81,7 +87,7 @@ struct Page {
 pub struct Listener {
     url: Url, // Radio Garden API URL
     client: Client, // HTTP client
-    streams: Vec<String> // Radio broadcast links to record
+    streams: Vec<Stream> // Radio broadcast links to record
 }
 
 
@@ -103,8 +109,9 @@ impl Listener {
     pub async fn record_streams(&mut self, duration_seconds: u64, directory: &str) -> Result<(), RecordingError> {
         fs::create_dir_all(directory)?;
 
-        for (index, stream_url) in self.streams.iter().enumerate() {
-            let filename = format!("stream_{}.mp3", index);
+        for stream_info in self.streams.iter() {
+            let stream_url = &stream_info.url;
+            let filename: String = format!("stream_{}.mp3", stream_info.name);
             let target_path = Path::new(directory).join(filename);
 
             match self.client.get(stream_url).send().await {
@@ -197,9 +204,10 @@ impl Listener {
             let items = self.fetch_channels(&place.id).await?;
             for item in items {
                 let parts: Vec<&str> = item.page.url.split('/').collect();
+                let name: String = item.page.title.chars().filter(|c| c.is_alphanumeric()).collect();
                 if let Some(last_part) = parts.last() {
                     let stream_url = format!("{}listen/{}/channel.mp3", self.url, last_part);
-                    self.streams.push(stream_url);
+                    self.streams.push(Stream{url: stream_url, name: name});
                 }
             }
         }
