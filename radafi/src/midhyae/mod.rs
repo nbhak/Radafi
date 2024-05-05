@@ -9,6 +9,9 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+mod threadpool;
+use self::threadpool::ThreadPool;
+
 /**
  * Defines the categories of errors that may occur when recording radio streams
  * from Radio Garden.
@@ -105,44 +108,57 @@ impl Listener {
 
     /**
      * Saves mp3 recordings for a given duration and directory.
+     * It will record up to ten channels at once.
      */
     pub async fn record_streams(&mut self, duration_seconds: u64, directory: &str) -> Result<(), RecordingError> {
         fs::create_dir_all(directory)?;
 
-        for stream_info in self.streams.iter() {
-            let stream_url = &stream_info.url;
-            let filename: String = format!("stream_{}.mp3", stream_info.name);
-            let target_path = Path::new(directory).join(filename);
+        let num_workers = std::cmp::min(10, self.streams.len());
+        let pool = ThreadPool::new(num_workers);
 
-            match self.client.get(stream_url).send().await {
-                Ok(mut response) => {
-                    if let Ok(mut file) = File::create(&target_path) {
-                        let start_time = Instant::now();
-                        while start_time.elapsed() < Duration::from_secs(duration_seconds) {
-                            match response.chunk().await {
-                                Ok(Some(chunk)) => {
-                                    if let Err(e) = file.write_all(&chunk) {
-                                        error!("Error writing to file: {}", e);
-                                        break;
+        for stream_info in self.streams.iter() {
+            let stream_url = stream_info.url.clone();
+            let filename = format!("stream_{}.mp3", stream_info.name);
+            let target_path = Path::new(directory).join(filename);
+            let client = self.client.clone();
+            let duration = duration_seconds;
+
+            pool.execute(move || {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    match client.get(&stream_url).send().await {
+                        Ok(mut response) => {
+                            if let Ok(mut file) = File::create(&target_path) {
+                                let start_time = Instant::now();
+                                while start_time.elapsed() < Duration::from_secs(duration) {
+                                    match response.chunk().await {
+                                        Ok(Some(chunk)) => {
+                                            if let Err(e) = file.write_all(&chunk) {
+                                                error!("Error writing to file: {}", e);
+                                                break;
+                                            }
+                                        }
+                                        Ok(None) => break,
+                                        Err(e) => {
+                                            error!("Error reading from response: {}", e);
+                                            break;
+                                        }
                                     }
                                 }
-                                Ok(None) => break,
-                                Err(e) => {
-                                    error!("Error reading from response: {}", e);
-                                    break;
-                                }
+                                info!("Successfully recorded: {}", target_path.display());
+                            } else {
+                                error!("Error creating file: {}", target_path.display());
                             }
                         }
-                        info!("Successfully recorded: {}", target_path.display());
-                    } else {
-                        error!("Error creating file: {}", target_path.display());
+                        Err(e) => {
+                            error!("Error fetching stream URL: {}", e);
+                        }
                     }
-                }
-                Err(e) => {
-                    error!("Error fetching stream URL: {}", e);
-                }
-            }
+                });
+            });
         }
+
+        pool.terminate();
 
         Ok(())
     }
