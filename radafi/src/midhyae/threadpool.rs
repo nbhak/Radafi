@@ -1,4 +1,4 @@
-use log::{debug, info};
+use log::debug;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
@@ -81,7 +81,7 @@ impl Worker {
                     task();
                 }
                 Message::Terminate => {
-                    info!("Worker {} was told to terminate.", id);
+                    debug!("Worker {} was told to terminate.", id);
                     break;
                 }
             }

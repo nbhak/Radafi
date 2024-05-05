@@ -1,8 +1,8 @@
+use log::{error, info};
 use reqwest::{Client, Error};
 use serde::{Deserialize, Serialize};
-use url::Url;
-use log::{info, error};
 use thiserror::Error;
+use url::Url;
 
 use std::fs::{self, File};
 use std::io::Write;
@@ -88,16 +88,14 @@ struct Stream {
  * via Radio Garden.
  */
 pub struct Listener {
-    url: Url, // Radio Garden API URL
-    client: Client, // HTTP client
-    streams: Vec<Stream> // Radio broadcast links to record
+    url: Url,             // Radio Garden API URL
+    client: Client,       // HTTP client
+    streams: Vec<Stream>, // Radio broadcast links to record
 }
-
 
 impl Listener {
     pub fn new(base_url: &str) -> Self {
-        let url = Url::parse(base_url)
-            .expect("Failed to parse base URL");
+        let url = Url::parse(base_url).expect("Failed to parse base URL");
         info!("Initialized Listener with URL: {}", url);
         Listener {
             url,
@@ -110,12 +108,17 @@ impl Listener {
      * Saves mp3 recordings for a given duration and directory.
      * It will record up to ten channels at once.
      */
-    pub async fn record_streams(&mut self, duration_seconds: u64, directory: &str) -> Result<(), RecordingError> {
+    pub async fn record_streams(
+        &mut self,
+        duration_seconds: u64,
+        directory: &str,
+    ) -> Result<(), RecordingError> {
         fs::create_dir_all(directory)?;
 
         let num_workers = std::cmp::min(10, self.streams.len());
         let pool = ThreadPool::new(num_workers);
 
+        // Record stream from each channel identified in the region
         for stream_info in self.streams.iter() {
             let stream_url = stream_info.url.clone();
             let filename = format!("stream_{}.mp3", stream_info.name);
@@ -123,6 +126,7 @@ impl Listener {
             let client = self.client.clone();
             let duration = duration_seconds;
 
+            // Add a recording task to be scheduled by the threadpool
             pool.execute(move || {
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 rt.block_on(async {
@@ -163,24 +167,27 @@ impl Listener {
         Ok(())
     }
 
-
     /**
-     * Obtains a list of Radio Garden locations and IDs for a given country.
+     * Obtains a list of Radio Garden locations with IDs for a given country.
      */
     async fn fetch_places(&self, country: &str) -> Result<Vec<Place>, Error> {
-        let places_url = self.url.
-            join("places")
+        let places_url = self
+            .url
+            .join("places")
             .expect("Failed to construct places URL");
         info!("Fetching places from URL: {}", places_url);
-        
-        let places_response: PlaceList = self.client
+
+        let places_response: PlaceList = self
+            .client
             .get(places_url)
             .send()
             .await?
             .json::<PlaceList>()
             .await?;
-        
-        Ok(places_response.data.list
+
+        Ok(places_response
+            .data
+            .list
             .into_iter()
             .filter(|p| p.country == country)
             .collect())
@@ -191,39 +198,54 @@ impl Listener {
      * its Radio Garden ID).
      */
     async fn fetch_channels(&self, place_id: &str) -> Result<Vec<Item>, Error> {
-        let channels_url: Url = self.url
+        let channels_url: Url = self
+            .url
             .join(&format!("page/{}/channels", place_id))
             .expect("Failed to construct channels URL");
         info!("Fetching channels from URL: {}", channels_url);
-        
-        let channel_response: ChannelResponse = self.client
+
+        let channel_response: ChannelResponse = self
+            .client
             .get(channels_url)
             .send()
             .await?
             .json::<ChannelResponse>()
             .await?;
-        
-        Ok(channel_response.channel_data.content
+
+        Ok(channel_response
+            .channel_data
+            .content
             .into_iter()
             .flat_map(|c| c.items)
             .collect())
     }
 
     /**
-     * Obtains the links to radio streams in a given country.
+     * Obtains the links to radio streams in a given country. Returns the
+     * number of channels identified in the region.
      */
     pub async fn store_streams(&mut self, country: &str) -> Result<usize, Error> {
         let places = self.fetch_places(country).await?;
+        // Replace list of streams with those from new country
         self.streams.clear();
 
         for place in places {
             let items = self.fetch_channels(&place.id).await?;
             for item in items {
+                let name: String = item
+                    .page
+                    .title
+                    .chars()
+                    .filter(|c| c.is_alphanumeric())
+                    .collect();
+                // The channel ID is the last element of the path in the URL
                 let parts: Vec<&str> = item.page.url.split('/').collect();
-                let name: String = item.page.title.chars().filter(|c| c.is_alphanumeric()).collect();
                 if let Some(last_part) = parts.last() {
                     let stream_url = format!("{}listen/{}/channel.mp3", self.url, last_part);
-                    self.streams.push(Stream{url: stream_url, name: name});
+                    self.streams.push(Stream {
+                        url: stream_url,
+                        name: name,
+                    });
                 }
             }
         }
